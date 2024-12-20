@@ -84,13 +84,13 @@ class PoseAnalyzer:
         
         # Prioritize posture recommendations
         if predicted_class == "looks good":
-            return f"Good Posture ✅ ({confidence:.2%})"
+            return f"Good Posture ({confidence:.2%})"
         elif predicted_class == "sit up straight":
-            return f"Adjust Posture: Sit Up Straight 🟨 ({confidence:.2%})"
+            return f"Adjust Posture: Sit Up Straight ({confidence:.2%})"
         elif predicted_class == "straighten head":
-            return f"Adjust Posture: Straighten Head 🟨 ({confidence:.2%})"
+            return f"Adjust Posture: Straighten Head ({confidence:.2%})"
         else:
-            return f"Posture Needs Improvement ⚠️ ({confidence:.2%})"
+            return f"Posture Needs Improvement ({confidence:.2%})"
 
     def real_time_monitor(self, camera_index=0, fps=30):
         # Start prediction worker thread
