@@ -16,7 +16,7 @@ Some examples of good and bad postures.
 ## Next steps
 The core functionality is done. 
  Usability improvements:
- - sound alert
+ - higher sound alert
  - UI for configurations (sound alert enable/disable, view/disable image, time with bad posture for alerts)
 Model improvements:
 - train the model for images on the side of the person (dual monitor setup)
