@@ -1,4 +1,4 @@
 roboflow==1.1.50
 opencv-python==4.10.0.84
-supervision==0.16.0
 python-dotenv==1.0.0
+matplotlib==3.8.2

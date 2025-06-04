@@ -1,4 +1,3 @@
-import supervision as sv
 import cv2
 from roboflow import Roboflow
 import time
@@ -8,6 +7,8 @@ import tempfile
 import traceback
 import logging
 from threading import Thread, Lock
+from typing import TypedDict, Callable
+from pose_statistics import PostureMetrics
 
 # Set up basic logging
 logging.basicConfig(level=logging.INFO)
@@ -15,6 +16,18 @@ logger = logging.getLogger(__name__)
 
 # Load environment variables from .env file
 load_dotenv()
+
+class PredictionResult(TypedDict):
+    class_name: str
+    confidence: float
+    timestamp: int
+
+    def __repr__(self):
+        return f"PredictionResult(class_name={self.class_name}, confidence={self.confidence}, timestamp={self.timestamp})"
+    
+
+
+
 
 class PoseAnalyzer:
     def __init__(self, api_key=None):
@@ -26,34 +39,32 @@ class PoseAnalyzer:
         # Create a temporary directory for frame processing
         self.temp_dir = tempfile.mkdtemp()
         
-        # Threading setup
-        self.frame_lock = Lock()
-        self.status_lock = Lock()
+        
         self.latest_frame = None
         self.current_status = "Initializing..."
         self.running = True
         self.frame_ready = False
+        self.last_prediction_time = 0
+        self.prediction_interval = 0.5
 
-    def prediction_worker(self):
+    def prediction_worker(self,cap:cv2.VideoCapture, callback:Callable[[PredictionResult], None]=None):
         while self.running:
-            current_frame = None
-            
-            # Get latest frame if available
-            with self.frame_lock:
-                if self.frame_ready:
-                    current_frame = self.latest_frame.copy()
-                    self.frame_ready = False  # Mark as consumed
-            
-            if current_frame is not None:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            current_time = time.time()
+            if current_time - self.last_prediction_time >= self.prediction_interval:
+                latest_frame = frame.copy()
+                self.last_prediction_time = current_time
                 try:
-                    status = self.analyze_posture(current_frame)
-                    # Update current status thread-safely
-                    with self.status_lock:
-                        self.current_status = status
+                    status = self.analyze_posture(latest_frame)
+                    self.current_status = status
+                    if callback:
+                        callback(status)
                 except Exception as e:
                     logger.error(f"Error in prediction worker: {e}")
             
-            time.sleep(0.01)  # Small sleep to prevent CPU spinning
+            time.sleep(0.5)  # Small sleep to prevent CPU spinning
 
     def analyze_posture(self, frame):
         # Save frame temporarily
@@ -82,69 +93,95 @@ class PoseAnalyzer:
         predicted_class = top_prediction['class']
         confidence = top_prediction['confidence']
         
-        # Prioritize posture recommendations
-        if predicted_class == "looks good":
-            return f"Good Posture ({confidence:.2%})"
-        elif predicted_class == "sit up straight":
-            return f"Adjust Posture: Sit Up Straight ({confidence:.2%})"
-        elif predicted_class == "straighten head":
-            return f"Adjust Posture: Straighten Head ({confidence:.2%})"
-        else:
-            return f"Posture Needs Improvement ({confidence:.2%})"
-
-    def real_time_monitor(self, camera_index=0, fps=30):
-        # Start prediction worker thread
-        prediction_thread = Thread(target=self.prediction_worker, daemon=True)
-        prediction_thread.start()
-        
-        # Real-time posture monitoring
-        cap = cv2.VideoCapture(camera_index)
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        
-        last_prediction_time = 0
-        prediction_interval = 1.0  # Predict every second
-        
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            
-            current_time = time.time()
-            
-            # Update latest frame for prediction every second
-            if current_time - last_prediction_time >= prediction_interval:
-                with self.frame_lock:
-                    self.latest_frame = frame.copy()
-                    self.frame_ready = True
-                last_prediction_time = current_time
-            
-            # Get current status thread-safely
-            with self.status_lock:
-                status = self.current_status
-            
-            # Display frame with status
-            cv2.putText(frame, status, (10, 30), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-            cv2.imshow('Posture Analyzer', frame)
-            
-            # Exit on 'q' key
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
-        
-        # Cleanup
-        self.running = False
-        prediction_thread.join(timeout=1.0)
-        cap.release()
-        cv2.destroyAllWindows()
-        
+        return PredictionResult(class_name=predicted_class, confidence=confidence, timestamp=int(time.time()))
+    
+    def cleanup(self):
         # Cleanup temp directory
         if os.path.exists(self.temp_dir):
             os.rmdir(self.temp_dir)
 
+def start_worker(analyzer:PoseAnalyzer, cv2_cap:cv2.VideoCapture, callback:Callable[[PredictionResult], None]):
+    prediction_thread = Thread(target=analyzer.prediction_worker, daemon=True, args=(cv2_cap, callback,))
+    prediction_thread.start()
+    return prediction_thread            
+
+def stop_worker(analyzer:PoseAnalyzer, prediction_thread:Thread):
+    analyzer.running = False
+    prediction_thread.join(timeout=1.0)
+ 
+def print_video(cv2_cap:cv2.VideoCapture, result:PredictionResult):
+    ret, frame = cv2_cap.read()
+    if not ret:
+        logger.error("Failed to read frame in callback")
+        return
+    message = f"{result['class_name']} ({result['confidence']:.2%})" if result else "No result"
+    # Display frame with status
+    cv2.putText(frame, message, (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2)
+
+    # Add instructions for key commands
+    cv2.putText(frame, "Press 'g' for graph, 'q' to quit", (10, frame.shape[0] - 20),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 1)
+
+    cv2.imshow('Posture Analyzer', frame)
+
+last_pose_result = None
+last_pose_result_number = 0
+
+def worker_callback(postureMetrics:PostureMetrics):
+    def collect_result(result:PredictionResult):
+        global last_pose_result
+        last_pose_result = result
+        global last_pose_result_number
+        last_pose_result_number += 1
+        print(f"Callback {last_pose_result_number}: {result}")
+        if result:
+            postureMetrics.add_reading(result['class_name'])
+    return collect_result
+
+def real_time_monitor(analyzer:PoseAnalyzer, camera_index=0, fps=60):
+    import matplotlib
+    matplotlib.use('Qt5Agg') 
+
+    # Real-time posture monitoring
+    cap = cv2.VideoCapture(camera_index)
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    postureMetrics = PostureMetrics()
+    prediction_thread = start_worker(analyzer, cap, worker_callback(postureMetrics))
+
+    print("Posture monitoring started!")
+    print("Press 'g' to show daily graph, 'q' to quit")
+    showing_graph = False
+
+    while True:
+        time.sleep(1/fps)
+        print_video(cap, last_pose_result)
+        if showing_graph:
+            postureMetrics.plot_daily_summary(hours_back=1)
+
+        # Handle key presses
+        key = cv2.waitKey(1) & 0xFF
+
+        # Exit on 'q' key
+        if key == ord('q'):
+            break
+        # Show graph on 'g' key
+        elif key == ord('g'):
+            showing_graph = not showing_graph
+            if not showing_graph:
+                postureMetrics.close_plot()
+        
+
+    stop_worker(analyzer, prediction_thread)
+    cap.release()
+    cv2.destroyAllWindows()
+    analyzer.cleanup()
+    
+
 def main():
     try:
         analyzer = PoseAnalyzer(api_key=os.getenv('ROBOFLOW_API_KEY'))
-        analyzer.real_time_monitor()
+        real_time_monitor(analyzer)
     except ValueError as e:
         logger.error(f"Error: {e}\n{traceback.format_exc()}")
         print(f"Error: {e}")
