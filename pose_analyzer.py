@@ -9,6 +9,7 @@ import logging
 from threading import Thread, Lock
 from typing import TypedDict, Callable
 from pose_statistics import PostureMetrics
+import subprocess
 
 # Set up basic logging
 logging.basicConfig(level=logging.INFO)
@@ -134,7 +135,7 @@ def worker_callback(postureMetrics:PostureMetrics):
         last_pose_result = result
         global last_pose_result_number
         last_pose_result_number += 1
-        print(f"Callback {last_pose_result_number}: {result}")
+        logger.info(f"Callback {last_pose_result_number}: {result}")
         if result:
             postureMetrics.add_reading(result['class_name'])
     return collect_result
@@ -149,15 +150,13 @@ def real_time_monitor(analyzer:PoseAnalyzer, camera_index=0, fps=60):
     postureMetrics = PostureMetrics()
     prediction_thread = start_worker(analyzer, cap, worker_callback(postureMetrics))
 
-    print("Posture monitoring started!")
-    print("Press 'g' to show daily graph, 'q' to quit")
-    showing_graph = False
+    logger.info("Posture monitoring started!")
+    logger.info("Press 'g' to show daily graph, 'q' to quit")
+    graph_subprocess = None
 
     while True:
         time.sleep(1/fps)
         print_video(cap, last_pose_result)
-        if showing_graph:
-            postureMetrics.plot_daily_summary(hours_back=1)
 
         # Handle key presses
         key = cv2.waitKey(1) & 0xFF
@@ -167,14 +166,21 @@ def real_time_monitor(analyzer:PoseAnalyzer, camera_index=0, fps=60):
             break
         # Show graph on 'g' key
         elif key == ord('g'):
-            showing_graph = not showing_graph
-            if not showing_graph:
-                postureMetrics.close_plot()
+            if not graph_subprocess or graph_subprocess.poll() is not None:
+                graph_subprocess = subprocess.Popen(['python', '-m', 'pose_statistics'])
+                logger.info("Graph started!")
+            else:
+                logger.info("Close graph!")
+                graph_subprocess.terminate()
+
+                
         
 
     stop_worker(analyzer, prediction_thread)
     cap.release()
     cv2.destroyAllWindows()
+    if graph_subprocess:
+        graph_subprocess.terminate()
     analyzer.cleanup()
     
 
