@@ -11,11 +11,11 @@ from typing import TypedDict, Callable
 from pose_statistics import PostureMetrics
 import subprocess
 
-# Set up basic logging
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Load environment variables from .env file
+
 load_dotenv()
 
 class PredictionResult(TypedDict):
@@ -44,7 +44,6 @@ class PoseAnalyzer:
         self.latest_frame = None
         self.current_status = "Initializing..."
         self.running = True
-        self.frame_ready = False
         self.last_prediction_time = 0
         self.prediction_interval = 0.5
 
